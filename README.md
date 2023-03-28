@@ -6,7 +6,7 @@ This code is implemented in PyTorch, and we have tested the code under the follo
 - torch = 1.10.0
 - torchvision = 0.11.1
 
-## run for 20-Split CIFAR100
+## run for experiments
 
 ```
 bash script/perform.sh Your_data_path Your_CUDA_id
