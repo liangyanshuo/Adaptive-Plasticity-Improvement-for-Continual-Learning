@@ -1,5 +1,5 @@
 # Adaptive Plasticity Improvement for Continual Learning
-Code For CVPR'2023 paper "[Adaptive Plasticity Improvement for Continual Learning]
+Code For CVPR'2023 paper "[Adaptive Plasticity Improvement for Continual Learning]"
 
 ## Requisite
 
