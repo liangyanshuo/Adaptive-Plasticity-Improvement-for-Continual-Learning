@@ -158,7 +158,7 @@ class Net(nn.Module):
                 per_layer_norm = []
                 # ipdb.set_trace()
                 for k, (m,params) in enumerate(self.net.named_parameters()):
-                    if k<4 and len(params.size())!=1:
+                    if k<8 and len(params.size())!=1:
                         per_layer_norm.append(params.grad.norm(p=2))
                         kk +=1
             elif self.arch == 'resnet':
@@ -191,7 +191,7 @@ class Net(nn.Module):
                 kk = 0 
                 # ipdb.set_trace()
                 for k, (m,params) in enumerate(self.net.named_parameters()):
-                    if k<4 and len(params.size())!=1:
+                    if k<8 and len(params.size())!=1:
                         if writer != None:
                             writer.add_scalar(f"4.Grad-Norm/task-{t}/layer-{kk+1}", params.grad.norm(p=2), self.iter)
                             writer.add_scalar(f"5.Grad-Norm-Retain/task-{t}/layer-{kk+1}", params.grad.norm(p=2)/per_layer_norm[kk], self.iter)
@@ -218,7 +218,7 @@ class Net(nn.Module):
                         try:
                             param.grad.data.fill_(0.)
                         except:
-                            ipdb.set_trace()
+                            assert param.shape[1] == 0
                 self.optimizer.step()
             else:
                 self.optimizer.step()
@@ -247,7 +247,7 @@ class Net(nn.Module):
             kk = 0 
             # ipdb.set_trace()
             for k, (m,params) in enumerate(self.net.named_parameters()):
-                if k<4 and len(params.size())!=1:
+                if k<8 and len(params.size())!=1:
                     sz =  params.grad.data.size(0)
                     if self.project_type[kk] == 'retain':
                         params.grad.data[:,:self.expand[kk][t-1]] = torch.mm(params.grad.data[:,:self.expand[kk][t-1]].view(sz,-1),\
@@ -256,7 +256,7 @@ class Net(nn.Module):
                         params.grad.data[:,:self.expand[kk][t-1]] = params.grad.data[:,:self.expand[kk][t-1]] - torch.mm(params.grad.data[:,:self.expand[kk][t-1]].view(sz,-1),\
                                                             self.feature_mat[kk]).view(params[:,:self.expand[kk][t-1]].size())
                     kk +=1
-                elif (k<4 and len(params.size())==1) and t != 0 :
+                elif (k<8 and len(params.size())==1) and t != 0 :
                     params.grad.data.fill_(0)
         elif self.arch == 'resnet':
             kk = 0 
@@ -302,9 +302,9 @@ class Net(nn.Module):
             example_data = x[b]
         if self.cuda: example_data = example_data.cuda()
         if t == None:
-            example_out  = self.net(example_data, self.current_task)
+            example_out  = self.net(example_data, self.current_task, get_feat=True)
         else:
-            example_out = self.net(example_data, t)
+            example_out = self.net(example_data, t, get_feat=True)
     
         act_list =[]
         act_list.extend([self.net.act['conv_in'], 
@@ -425,9 +425,9 @@ class Net(nn.Module):
         if self.cuda: example_data = example_data.cuda()
 
         if t == None:
-            example_out  = self.net(example_data, self.current_task)
+            example_out  = self.net(example_data, self.current_task, get_feat=True)
         else:
-            example_out = self.net(example_data, t)
+            example_out = self.net(example_data, t, get_feat=True)
     
         batch_list=[2*12,100,125,125] 
         pad = 2
@@ -474,9 +474,9 @@ class Net(nn.Module):
         if self.cuda: example_data = example_data.cuda()
 
         if t == None:
-            example_out  = self.net(example_data, self.current_task)
+            example_out  = self.net(example_data, self.current_task, get_feat=True)
         else:
-            example_out = self.net(example_data, t)
+            example_out = self.net(example_data, t, get_feat=True)
     
         batch_list=[2*12,100,100,125,125] 
         mat_list=[]
@@ -842,7 +842,7 @@ class Net(nn.Module):
             self.net = lenet_api.expand_network(self.n_outputs, self.n_tasks, self.net, expand_size, channels=[int(20*self.size), int(50*self.size), int(800*self.size), int(500*self.size)])
             kk = 0
             for k, (m,params) in enumerate(self.net.named_parameters()):
-                if k<4 and len(params.size())!=1:
+                if k<8 and len(params.size())!=1:
                     writer.add_scalar(f"MEM-EXPAND/Layer {kk+1}", params.shape[1], self.current_task)
                     kk +=1
         elif self.arch == 'resnet':

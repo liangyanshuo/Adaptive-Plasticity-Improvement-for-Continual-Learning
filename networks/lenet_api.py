@@ -1,13 +1,51 @@
 import numpy as np
-from torch import nn
+from torch import nn, Tensor
 
 from collections import OrderedDict
+from torch.nn import functional as F
 
 import torch
 
 from copy import deepcopy
 from math import sqrt
 import ipdb
+
+class api_Conv2d(nn.Conv2d):
+    def __init__(self,in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros'):
+        super(api_Conv2d,self).__init__(in_channels, out_channels, kernel_size, stride, padding, bias=bias, dilation=dilation, groups=groups, padding_mode=padding_mode)
+
+    def forward(self, input, t, fai=None):
+        if fai == None:
+            return F.conv2d(input, self.weight, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
+        else:
+            weight = self.weight[:,:input.shape[1]]
+            if t:
+                Fai = torch.cat(fai[:t],dim=1)
+                # weight = weight + torch.mm(self.weight[:,input.shape[1]:input.shape[1]+Fai.shape[1]], Fai)
+                if Fai.shape[1]:
+                    try:
+                        weight = weight + torch.matmul(self.weight[:,input.shape[1]:input.shape[1]+Fai.shape[1]].permute(0, 2, 3, 1), Fai.permute(1,0)).permute(0, 3, 1, 2)
+                    except:
+                        ipdb.set_trace()
+            try:
+                out = F.conv2d(input, weight, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
+            except:
+                ipdb.set_trace()
+            return out
+        
+class aip_Linear(nn.Linear):
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
+        super().__init__(in_features, out_features, bias, device, dtype)
+    
+    def forward(self, input: Tensor, t, fai=None) -> Tensor:
+        if fai == None:
+            return super().forward(input)
+        else:
+            weight = self.weight[:,:input.shape[1]]
+            if t:
+                Fai = torch.cat(fai[:t],dim=1)
+                if Fai.shape[1]: weight = weight + torch.mm(self.weight[:,input.shape[1]:input.shape[1]+Fai.shape[1]], Fai.permute(1,0))
+            return F.linear(input, weight, bias=self.bias)
 
 ## Define LeNet model 
 def compute_conv_output_size(Lin,kernel_size,stride=1,padding=0,dilation=1):
@@ -54,14 +92,14 @@ class Learner(nn.Module):
         self.channel1, self.channel2, self.channel3, self.channel4 = channels
         
         self.map.append(32)
-        self.conv1 = nn.Conv2d(3+sum(self.expand[0]), channel1, 5, bias=False, padding=2)
+        self.conv1 = api_Conv2d(3+sum(self.expand[0]), channel1, 5, bias=False, padding=2)
 
         s=compute_conv_output_size(32,5,1,2)
         s=compute_conv_output_size(s,3,2,1)
         self.ksize.append(5)
         self.in_channel.append(3+sum(self.expand[0]))        
         self.map.append(s)
-        self.conv2 = nn.Conv2d(channel1+sum(self.expand[1]), channel2, 5, bias=False, padding=2)
+        self.conv2 = api_Conv2d(channel1+sum(self.expand[1]), channel2, 5, bias=False, padding=2)
         
         s=compute_conv_output_size(s,5,1,2)
         s=compute_conv_output_size(s,3,2,1)
@@ -73,10 +111,11 @@ class Learner(nn.Module):
         self.relu=torch.nn.ReLU()
         self.drop1=torch.nn.Dropout(0)
         self.drop2=torch.nn.Dropout(0)
-        self.lrn = torch.nn.LocalResponseNorm(4,0.001/9.0,0.75,1)
+        self.bn1 = torch.nn.BatchNorm2d(channel1, track_running_stats=False)
+        self.bn2 = torch.nn.BatchNorm2d(channel2, track_running_stats=False)
 
-        self.fc1 = nn.Linear(channel2*self.smid*self.smid+sum(self.expand[2]),channel3, bias=False)
-        self.fc2 = nn.Linear(channel3+sum(self.expand[3]),channel4, bias=False)
+        self.fc1 = aip_Linear(channel2*self.smid*self.smid+sum(self.expand[2]),channel3, bias=False)
+        self.fc2 = aip_Linear(channel3+sum(self.expand[3]),channel4, bias=False)
         self.map.extend([channel3])
         
         self.fc3 = torch.nn.Linear(channel4, n_outputs,bias=False)
@@ -88,61 +127,67 @@ class Learner(nn.Module):
 
         self.multi_head = True
         
-    def forward(self, x, t=0):
-        bsz = deepcopy(x.size(0))
+    def forward(self, x, t=0, get_feat=False):
+        if get_feat:
+            bsz = deepcopy(x.size(0))
 
-        if t != 0:
-            try:
+            if t != 0:
                 x = torch.cat([x] + [torch.matmul(x.permute(0, 2, 3, 1), self.weight1[i]).permute(0, 3, 1, 2) for i in range(t)] + [torch.zeros(x.size(0),sum(self.expand[0][t:]), x.size(2), x.size(3), device=x.device)], dim=1)
-            except:
-                ipdb.set_trace()
-                raise Exception('Wrong')
-        else:
-            x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[0]), x.size(2), x.size(3), device=x.device)], dim=1)
-        self.act['conv1']=x
+            else:
+                x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[0]), x.size(2), x.size(3), device=x.device)], dim=1)
+            self.act['conv1']=x
 
-        x = self.conv1(x)
-        x = self.maxpool(self.drop1(self.lrn(self.relu(x))))
+            x = self.conv1(x, t=t)
+            x = self.maxpool(self.drop1(self.bn1(self.relu(x))))
 
-        if t != 0:
-            try:
+            if t != 0:
                 x = torch.cat([x] + [torch.matmul(x.permute(0, 2, 3, 1), self.weight2[i]).permute(0, 3, 1, 2) for i in range(t)] + [torch.zeros(x.size(0),sum(self.expand[1][t:]), x.size(2), x.size(3), device=x.device)], dim=1)
-            except:
-                ipdb.set_trace()
-        else:
-            x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[1]), x.size(2), x.size(3), device=x.device)], dim=1)
-        self.act['conv2']=x
+            else:
+                x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[1]), x.size(2), x.size(3), device=x.device)], dim=1)
+            self.act['conv2']=x
 
-        x = self.conv2(x)
-        x = self.maxpool(self.drop1(self.lrn (self.relu(x))))
+            x = self.conv2(x, t=t)
+            x = self.maxpool(self.drop1(self.bn2 (self.relu(x))))
 
-        x=x.reshape(bsz,-1)
+            x=x.reshape(bsz,-1)
 
-        if t != 0:
-            try:
+            if t != 0:
                 x = torch.cat([x] + [torch.mm(x, self.weight3[i]) for i in range(t)] + [torch.zeros(x.size(0),sum(self.expand[2][t:]), device=x.device)], dim=1)
-            except:
-                ipdb.set_trace()
-        else:
-            x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[2]), device=x.device)], dim=1)
-        self.act['fc1']=x
+            else:
+                x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[2]), device=x.device)], dim=1)
+            self.act['fc1']=x
 
-        x = self.fc1(x)
-        x = self.drop2(self.relu(x))
+            x = self.fc1(x, t=t)
+            x = self.drop2(self.relu(x))
 
-        if t != 0:
-            try:
+            if t != 0:
                 x = torch.cat([x] + [torch.mm(x, self.weight4[i]) for i in range(t)] + [torch.zeros(x.size(0),sum(self.expand[3][t:]), device=x.device)], dim=1)
-            except:
-                ipdb.set_trace()
+            else:
+                x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[3]), device=x.device)], dim=1)
+            self.act['fc2']=x        
+
+            x = self.fc2(x, t=t)
+            x = self.drop2(self.relu(x))
+
+            y = self.fc3(x)
         else:
-            x = torch.cat([x, torch.zeros(x.size(0),sum(self.expand[3]), device=x.device)], dim=1)
-        self.act['fc2']=x        
+            bsz = deepcopy(x.size(0))
 
-        x = self.fc2(x)
-        x = self.drop2(self.relu(x))
+            x = self.conv1(x, t=t, fai=self.weight1)
+            x = self.maxpool(self.drop1(self.relu(self.bn1(x))))
 
-        y = self.fc3(x)
+            x = self.conv2(x, t=t, fai=self.weight2)
+            x = self.maxpool(self.drop1(self.relu(self.bn2(x))))
+
+            x=x.reshape(bsz,-1)
+
+            x = self.fc1(x, t=t, fai=self.weight3)
+            x = self.drop2(self.relu(x))
+
+            x = self.fc2(x, t=t, fai=self.weight4)
+            x = self.drop2(self.relu(x))
+
+            y = self.fc3(x)
             
         return y
 
@@ -150,12 +195,9 @@ class Learner(nn.Module):
         # ipdb.set_trace()
         old_out_channel, old_in_channel, _, _ = model.conv1.weight.size()
         new_out_channel, new_in_channel, _, _ = self.conv1.weight.size()
-        try:
-            assert old_out_channel == new_out_channel
-        except:
-            print(old_out_channel, new_out_channel)
-            raise Exception('Wrong')
+        assert old_out_channel == new_out_channel
         (self.conv1.weight[:old_out_channel, :old_in_channel]).data.copy_(model.conv1.weight.data)
+        self.conv1.weight[:,old_in_channel:].data.zero_()
         select_dim = torch.randperm(3, device=device)[:self.expand[0][-1]]
         self.select1 = model.select1
         self.select1.append(select_dim)
@@ -164,6 +206,7 @@ class Learner(nn.Module):
         new_out_channel, new_in_channel, _, _ = self.conv2.weight.size()
         assert old_out_channel == new_out_channel
         (self.conv2.weight[:old_out_channel, :old_in_channel]).data.copy_(model.conv2.weight.data)
+        self.conv2.weight[:,old_in_channel:].data.zero_()
         select_dim = torch.randperm(self.channel1, device=device)[:self.expand[1][-1]]
         self.select2 = model.select2
         self.select2.append(select_dim)
@@ -172,6 +215,7 @@ class Learner(nn.Module):
         new_out_dim, new_in_dim = self.fc1.weight.size()
         assert old_out_channel == new_out_channel
         (self.fc1.weight[:old_out_dim, :old_in_dim]).data.copy_(model.fc1.weight.data)
+        self.fc1.weight[:,old_in_dim:].data.zero_()
         select_dim = torch.randperm(self.channel2*self.smid*self.smid, device=device)[:self.expand[2][-1]]
         self.select3 = model.select3
         self.select3.append(select_dim)
@@ -180,6 +224,7 @@ class Learner(nn.Module):
         new_out_dim, new_in_dim = self.fc2.weight.size()
         assert old_out_dim == new_out_dim
         (self.fc2.weight[:old_out_dim, :old_in_dim]).data.copy_(model.fc2.weight.data)
+        self.fc2.weight[:,old_in_dim:].data.zero_()
         select_dim = torch.randperm(self.channel3, device=device)[:self.expand[3][-1]]
         self.select4 = model.select4
         self.select4.append(select_dim)
@@ -269,4 +314,6 @@ def expand_feature(expand_size, task, feature_list, model):
     new_feature_list.append(new_feature4)
 
     return new_feature_list
+
+
 
